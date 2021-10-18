@@ -1,0 +1,30 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) {
+
+    stage('Install dependencies') { 
+      sh '''
+        yum install -y openssl vim-common
+        wget https://github.com/jgm/pandoc/releases/download/2.14/pandoc-2.14-linux-amd64.tar.gz
+        tar -xvf pandoc-2.14-linux-amd64.tar.gz --directory /root/
+        ln -s /root/pandoc-2.14/bin/pandoc /bin/pandoc
+      '''
+     }
+
+    stage('Clone repository') {
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: '*/automation']],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [],
+        submoduleCfg: [],
+        userRemoteConfigs: [[
+          credentialsId: 'CorevisCI-git',
+          url: 'git@github.com:sandzhaj/demo_docker.git']]]
+      )
+    }
+    withCredentials([string(credentialsId: 'GOOGLE_API', variable: 'G_API_KEY'), file(credentialsId: 'GOOGLE_CREDENTIALS', variable: 'G_CREDENTIALS'), usernamePassword(credentialsId: 'jira_integration_credentials', passwordVariable: 'J_USERTOKEN', usernameVariable: 'J_USERNAME')]) {
+        stage('Create tickets') { sh 'bash automation_scripts/jira/gcalendar_to_jira.sh' }
+    }
+  
+  }
+}

@@ -1,0 +1,61 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) { 
+
+try {
+stage('git_clone') {
+    git branch: "${CAP_BRANCH}",
+     credentialsId: 'CorevisCI-git',
+     url: 'git@github.com:sandzhaj/capistrano3.git'
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: git clone\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  ''' 
+}
+
+try {
+stage('install_dep') {
+    sh 'bundle install'
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: install dependencies\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  exit 1
+  ''' 
+}
+
+try {
+stage ('rake_task') {
+withCredentials([string(credentialsId: 'capistrano_password_qa', variable: 'CAP_PASS')]) {
+  sh label: '', script: '''
+    eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/id_rsa
+    sed -i "s/#password: \\"\\"/password: ${CAP_PASS}/g" config/deploy.rb
+    cap ${CLIENT_NAME}-${CLIENT_ENV} rake_tasks:run_on_primary_app TASK_TO_RUN="${TASK_TO_RUN}" COMMENT="${COMMENT}" DEPLOYED_BY="${BUILD_USER_ID}"
+  '''}
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Run rake task\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  ''' 
+}
+}
+}

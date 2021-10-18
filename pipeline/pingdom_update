@@ -1,0 +1,49 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) {
+
+    stage('Install dependencies') { 
+      sh '''
+        pip3 install --upgrade setuptools pip
+        cat << EOF >> requirements.txt
+        requests~=2.26.0
+        PyYAML==5.4.1
+EOF
+        pip3 install -r requirements.txt
+      '''
+     }
+
+    stage('Clone repos') {
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: '*/automation']],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [],
+        submoduleCfg: [],
+        userRemoteConfigs: [[
+          credentialsId: 'CorevisCI-git',
+          url: 'git@github.com:sandzhaj/demo_docker.git']]]
+      )
+      dir('puppet') {
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: "*/$C_BRANCH"]],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [],
+        submoduleCfg: [],
+        userRemoteConfigs: [[
+          credentialsId: 'CorevisCI-git',
+          url: 'git@github.com:sandzhaj/puppet_control-repo.git']]]
+      )}
+      sh '''
+      cp puppet/data/haproxy* ./
+      cp automation_scripts/jira/pingdom.py ./
+      '''
+    }
+
+    withCredentials([string(credentialsId: 'PINGDOM_API', variable: 'P_API')]) {
+        stage('Run script') { sh 'python3 -u pingdom.py' }
+    }
+    
+  
+  }
+}

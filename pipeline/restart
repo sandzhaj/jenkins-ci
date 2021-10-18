@@ -1,0 +1,77 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) { 
+
+try {
+
+stage('git_clone') {
+  if (CLIENT_NAME == 'phoenix') {
+    if (CLIENT_ENV.contains('api')) {
+      CAPBRANCH = 'phoenix-back-gem'
+    } else if (CLIENT_ENV.contains('-front')) {
+      CAPBRANCH = 'phoenix-fron-deploy'
+    } else {
+      CAPBRANCH = 'magento-deploy'
+    }
+  } else if (CLIENT_ENV.contains('-api')) {
+    CAPBRANCH = 'phoenix-back'
+  } else if (CLIENT_ENV.contains('-catalog')) {
+    CAPBRANCH = 'magento-deploy'
+  } else {
+    CAPBRANCH = 'master'
+  } 
+  git branch: CAPBRANCH,
+    credentialsId: 'CorevisCI-git',
+    url: 'git@github.com:sandzhaj/capistrano3.git'
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: git clone\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  ''' 
+}
+
+try {
+stage('install_dep') {
+    sh 'bundle install'
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: install dependencies\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  exit 1
+  ''' 
+}
+
+try {
+stage ('restart') {
+withCredentials([string(credentialsId: 'capistrano_password_qa', variable: 'CAP_PASS')]) {
+  sh label: '', script: '''
+    eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/id_rsa
+    sed -i "s/#password: \\"\\"/password: ${CAP_PASS}/g" config/deploy.rb
+    cap ${CLIENT_NAME}-${CLIENT_ENV} deploy:restart
+  '''}
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Run restart\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  ''' 
+}
+}
+}

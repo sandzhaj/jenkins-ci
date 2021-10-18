@@ -1,0 +1,58 @@
+node('deployer') {
+
+stage('notify_slack_channel') {
+  wrap([$class: 'BuildUser']) {
+  sh '''
+  SLACK_CHANNEL='weekly_deploys'
+  SLACK_URL=test
+  JSON_PAYLOAD=/tmp/payload
+  if [ $(echo ${BUILD_USER} | wc -c) -lt 3 ]; then BUILD_USER='Auto_Deploy'; fi
+  ADD_COMMET="@${BUILD_USER} has started deployment on "
+  TAGGER='```'
+
+#generate json payload for slack
+cat << EOF > $JSON_PAYLOAD
+{
+  \"channel\": \"#${SLACK_CHANNEL}\",
+    \"username\": \"webhookbot\",
+    \"icon_emoji\": \":ghost:\",
+    \"text\": \"${ADD_COMMET}\\n ${TAGGER} Client ENV: ${CLIENT_NAME}\\n Branch: ${BRANCH_TO_DEPLOY} ${TAGGER}\"
+}
+EOF
+
+  curl -X POST -d @${JSON_PAYLOAD} ${SLACK_URL}
+  '''
+  }
+}
+
+stage ('deploy_code') {
+withCredentials([string(credentialsId: 'capistrano_password_prod', variable: 'CAP_PASS')]) {
+    sshPublisher(publishers: [sshPublisherDesc(
+      configName: '172.16.50.6',
+      transfers: [
+        sshTransfer(
+          cleanRemote: false,
+          excludes: '',
+          execCommand: """cd /home/deploy/admin && \\
+            time cap ${CLIENT_NAME}-${CLIENT_ENV} deploy \\
+            -s branch="$BRANCH_TO_DEPLOY" \\
+            -s comment="$YOUR_COMMENT" \\
+            -s deploy_source="Admin" \\
+            -s password=$CAP_PASS""",
+        flatten: false,
+        makeEmptyDirs: false,
+        noDefaultExcludes: false,
+        patternSeparator: '[, ]+',
+        remoteDirectory: '',
+        remoteDirectorySDF: false,
+        removePrefix: '',
+        sourceFiles: '',
+        usePty: true)
+      ],
+      usePromotionTimestamp: false,
+      useWorkspaceInPromotion: false,
+      verbose: false)
+    ])
+}
+}
+}

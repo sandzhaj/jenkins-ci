@@ -1,0 +1,119 @@
+node('deployer') {
+  wrap([$class: 'BuildUser']) {   
+    withEnv(['SLACK_CHANNEL=#qa_regression_test', 'SLACK_URL=test
+
+try {
+stage('Git clone') {
+    checkout([
+      $class: 'GitSCM', 
+      branches: [[name: 'docker-ci']], 
+      doGenerateSubmoduleConfigurations: false, 
+      extensions: [[$class: 'SubmoduleOption', disableSubmodules: false, parentCredentials: true, recursiveSubmodules: true, reference: '', trackingSubmodules: false]],
+      submoduleCfg: [],
+      userRemoteConfigs: [[credentialsId: 'CorevisCI-git', url: 'git@github.com:sandzhaj/demo_docker.git']]
+    ])
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"$SLACK_CHANNEL\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: git clone\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_URL
+  exit 1
+  ''' 
+}
+
+try {
+stage('Git log') {
+    sh '''
+       cd regression
+       git log -n 1
+       cd -
+       '''
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"$SLACK_CHANNEL\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: git clone\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_URL
+  exit 1
+  ''' 
+}
+
+try {
+stage('Docker build') {
+    customImage = docker.build("sandzhajci/rspec-regression:${TAG}", "-f ${DOCKER_FILE_NAME} .")
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Docker build\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${SLACK_URL}
+  exit 1
+  ''' 
+}
+
+try {
+stage('Docker publish') {
+    docker.withRegistry('', 'dockerhub-ci') {
+        customImage.push()
+    }
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Docker publish\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${SLACK_URL}
+  ''' 
+}
+
+
+try {
+stage('Slack notify') {
+    sh '''
+    set -xe
+    JSON_PAYLOAD=/tmp/payload
+    ADD_COMMET="Docker sandzhajci/rspec-regression has been created"
+    TAGGER='```'
+
+#generate json payload for slack
+cat << EOF > $JSON_PAYLOAD
+{
+    \"channel\": \"${SLACK_CHANNEL}\",
+    \"username\": \"webhookbot\",
+    \"icon_emoji\": \":ghost:\",
+    \"text\": \"$TAGGER $ADD_COMMET\n Container tag: ${TAG} $TAGGER\"
+}
+EOF
+    curl -X POST -d @$JSON_PAYLOAD ${SLACK_URL}
+       '''
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Docker publish\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${SLACK_URL}
+  ''' 
+}
+}
+}
+}

@@ -1,0 +1,32 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) {
+
+    stage('Install dependencies') { 
+      sh '''
+        pip3 install GitPython mysql-connector-python
+      '''
+     }
+
+    stage('Clone repo') {
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: '*/automation']],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [],
+        submoduleCfg: [],
+        userRemoteConfigs: [[
+          credentialsId: 'CorevisCI-git',
+          url: 'git@github.com:sandzhaj/demo_docker.git']]]
+      )
+      sh '''
+      cp automation_scripts/jenkins/db_list_updater.py ./
+      '''
+    }
+
+    withCredentials([usernamePassword(credentialsId: 'mariadb_server', passwordVariable: 'mariadb_passwd', usernameVariable: 'mariadb_user'), usernamePassword(credentialsId: 'mysql_server', passwordVariable: 'mysql_passwd', usernameVariable: 'mysql_user')]) {
+        stage('Run script') { sh 'python3 db_list_updater.py' }
+    }
+    
+  
+  }
+}

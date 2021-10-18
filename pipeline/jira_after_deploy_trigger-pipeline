@@ -1,0 +1,44 @@
+node('deployer') {
+
+stage('checkout_code') {
+  checkout([
+    $class: 'GitSCM',
+     branches: [[name: '*/master']],
+     doGenerateSubmoduleConfigurations: false,
+     extensions: [],
+     submoduleCfg: [],
+     userRemoteConfigs: [[
+       credentialsId: 'CorevisCI-git',
+       url: 'git@github.com:sandzhaj/${REPO_NAME}.git']]]
+  )
+}
+
+stage ('create_tag') {
+  withCredentials([usernamePassword(credentialsId: 'jira_integration_credentials', passwordVariable: 'JIRA_USER_TOKEN', usernameVariable: 'JIRA_USER_NAME')]) {
+
+sh '''
+
+if [ "${NEW_RELEASE}" = false ]; then
+
+# only support tickets need to be moved to Requested to PRD state
+# generate json payload for jira, EOF func should NOT have spaces in the begining of line in pipeline jobs
+
+JSON_DATA=json.file
+cat << EOF > ${JSON_DATA}
+{
+    "transition": {
+        "id": "131"
+    }
+}
+EOF
+
+  for JIRA_ID in $(git tag -l $(git describe) -n1000 | grep -Po \'\\[\\K[^]]*\' | sort -u);
+  do  
+    curl -v -u "${JIRA_USER_NAME}":"${JIRA_USER_TOKEN}" -X POST -H "Content-Type: application/json" -d @${JSON_DATA}  "https://sandzhaj.atlassian.net/rest/api/2/issue/${JIRA_ID}/transitions"
+  done
+
+fi
+'''
+}
+}
+}

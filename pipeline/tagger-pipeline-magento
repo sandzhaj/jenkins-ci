@@ -1,0 +1,98 @@
+node('deployer') {
+
+stage('checkout_code') {
+  checkout([
+    $class: 'GitSCM',
+     branches: [[name: '*/master']],
+     doGenerateSubmoduleConfigurations: false,
+     extensions: [],
+     submoduleCfg: [],
+     userRemoteConfigs: [[
+       credentialsId: 'CorevisCI-git',
+       url: 'git@github.com:sandzhaj/${REPO_NAME}.git']]]
+  )
+}
+
+stage ('create_tag') {
+  withCredentials([usernamePassword(credentialsId: 'jira_integration_credentials', passwordVariable: 'JIRA_USER_TOKEN', usernameVariable: 'JIRA_USER_NAME')]) {
+
+sh '''
+git config --global user.name "CorevistCI"
+git config --global user.email "sandzhaj@sandzhaj.com"
+
+TAG_FILE=\'new_release.txt\'
+JSON_PAYLOAD=\'payload.json\'
+
+# check master branch for new commits
+if [[ "$(git describe|wc -c)" -gt 8 ]]; then
+echo "Something was merged into master"
+echo "Creating tag"
+CURRENT_RELEASE=$(git describe --abbrev=0 --tags)
+# check if new release
+if git log origin/master -1 | grep new_release; then NEW_RELEASE=true; else NEW_RELEASE=false; fi
+
+if "$NEW_RELEASE"; then
+  NEW_RELEASE_VERSION=$(echo $CURRENT_RELEASE | awk -F. \'{print $1"."$2+1"."0}\')
+  echo "New release: ${NEW_RELEASE_VERSION}"
+else
+  NEW_RELEASE_VERSION=$(echo $CURRENT_RELEASE | awk -F. \'{print $1"."$2"."$3+1}\')
+  echo "Support release: ${NEW_RELEASE_VERSION}"
+fi
+
+echo "v${NEW_RELEASE_VERSION}" > ${TAG_FILE}
+git log --reverse --cherry-pick --cherry --pretty=format:"%h %s %b (%an)" ${CURRENT_RELEASE}.. >> ${TAG_FILE}
+cat ${TAG_FILE}
+
+git tag -a ${NEW_RELEASE_VERSION} -F ${TAG_FILE}
+git push origin --tags
+
+if [ "${NEW_RELEASE}" = false ]; then
+
+# only support tickets need to be moved to Requested to PRD state
+# generate json payload for jira, EOF func should NOT have spaces in the begining of line in pipeline jobs
+
+JSON_DATA=json.file
+cat << EOF > ${JSON_DATA}
+{
+  "transition": {
+      "id": "121"
+  }
+}
+EOF
+
+  for JIRA_ID in $(cat ${TAG_FILE} | grep -Po \'\\[\\K[^]]*\' | sort -u);
+  do  
+    curl -v -u "${JIRA_USER_NAME}":"${JIRA_USER_TOKEN}" -X POST -H "Content-Type: application/json" -d @${JSON_DATA}  "https://sandzhaj.atlassian.net/rest/api/2/issue/${JIRA_ID}/transitions"
+  done
+fi
+
+# isolate release tag window
+TAGGER=\'```\'
+
+# update tag file for proper slack representation with "\\n" in the end of each line
+sed -i \'s/$/\\\\n/g\' $TAG_FILE
+
+#set tag file as a variable FILEG to pass it to final json
+FILEG="$(< $TAG_FILE)"
+ADD_COMMET="A new tag has been created for ${CLIENT_NAME}"
+
+# generate json payload for slack
+cat << EOF > $JSON_PAYLOAD
+{
+  "channel": "#${SLACK_CHANNEL_NAME}",
+  "username": "webhookbot",
+  "icon_emoji": ":ghost:",
+  "text": "$ADD_COMMET\\n $TAGGER$FILEG$TAGGER"
+}
+EOF
+
+curl -X POST -d @$JSON_PAYLOAD ${SLACK_CHANNEL_URL}
+
+else
+  echo "nothing has been commited"
+  exit 1
+fi
+'''
+}
+}
+}

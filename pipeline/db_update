@@ -1,0 +1,64 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) {
+
+    stage('Clone repo') {
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: '*/jenkins-ci']],
+        doGenerateSubmoduleConfigurations: false,
+        extensions: [],
+        submoduleCfg: [],
+        userRemoteConfigs: [[
+          credentialsId: 'CorevisCI-git',
+          url: 'git@github.com:sandzhaj/demo_docker.git']]]
+      )
+    }
+
+    if (UPDATE_SOURCE == 'true') {
+      stage ('Update source') {
+        withCredentials([file(credentialsId: 'deploy_qa_private_key', variable: 'key')]) {
+            sh '''
+            jq -c '.mariadb' db.json | grep -q $SOURCE_DATABASE && db='mariadb' || db='mysql'
+            config="/etc/automysqlbackup/${db}_jenkins.conf"
+            ssh -i $key -o StrictHostKeyChecking=no deploy@172.16.100.6 "sed -i '/CONFIG_db_names/c\\CONFIG_db_names=(${SOURCE_DATABASE})' $config"
+            ssh -i $key -o StrictHostKeyChecking=no deploy@172.16.100.6 "cat $config | grep names"
+            ssh -i $key -t -t -o StrictHostKeyChecking=no deploy@172.16.100.6 "sudo /usr/local/bin/automysqlbackup $config"
+            ssh -i $key -t -t -o StrictHostKeyChecking=no deploy@172.16.100.6 'cd /usr/local/backups/daily/'${SOURCE_DATABASE}' && sudo rm $(ls -t | awk "NR>6")'
+          '''
+        }
+      }
+    }
+
+    if (BACKUP_TARGET == 'true') {
+      stage ('Backup target') {
+        withCredentials([file(credentialsId: 'deploy_qa_private_key', variable: 'key')]) {
+            sh '''
+            jq -c '.mariadb' db.json | grep -q $TARGET_DATABASE && db='mariadb' || db='mysql'
+            config="/etc/automysqlbackup/${db}_jenkins.conf"
+            ssh -i $key -o StrictHostKeyChecking=no deploy@172.16.100.6 "sed -i '/CONFIG_db_names/c\\CONFIG_db_names=(${TARGET_DATABASE})' $config"
+            ssh -i $key -o StrictHostKeyChecking=no deploy@172.16.100.6 "cat $config | grep names"
+            ssh -i $key -t -t -o StrictHostKeyChecking=no deploy@172.16.100.6 "sudo /usr/local/bin/automysqlbackup $config"
+            ssh -i $key -t -t -o StrictHostKeyChecking=no deploy@172.16.100.6 'cd /usr/local/backups/daily/'${TARGET_DATABASE}' && sudo rm $(ls -t | awk "NR>6")'
+          '''
+        }
+      }
+    }
+
+    stage ('Update database') {
+      withCredentials([usernamePassword(credentialsId: 'mariadb_server', passwordVariable: 'mariadb_passwd', usernameVariable: 'mariadb_user'), usernamePassword(credentialsId: 'mysql_server', passwordVariable: 'mysql_passwd', usernameVariable: 'mysql_user'), file(credentialsId: 'deploy_qa_private_key', variable: 'key')]) {
+        sh '''
+          ssh-keyscan -t rsa 172.16.100.6 2>&1 >> /root/.ssh/known_hosts
+          jq -c '.mariadb' db.json | grep -q $SOURCE_DATABASE && MYSQL_PASS="${mariadb_passwd}" MYSQL_HOST='172.16.100.12' MYSQL_USER_NAME="${mariadb_user}" || MYSQL_PASS="${mysql_passwd}" MYSQL_HOST='172.16.100.14' MYSQL_USER_NAME="${mysql_user}"
+          set -exo pipefail
+          ARCH_PATH=/usr/local/backups/daily/
+          ARCH_NAME=$(ssh -tt -i $key deploy@172.16.100.6 ls -1 ${ARCH_PATH}${SOURCE_DATABASE} | tail -n 1 | tr -d '\r')
+          scp -i $key deploy@172.16.100.6:${ARCH_PATH}${SOURCE_DATABASE}/${ARCH_NAME} /tmp/$SOURCE_DATABASE.gz
+          cd /tmp/
+          ls -lah
+          zcat $SOURCE_DATABASE.gz | mysql -u $MYSQL_USER_NAME -p$MYSQL_PASS -h $MYSQL_HOST $TARGET_DATABASE || echo "Can't restore database. See the log"
+          rm -f /tmp/${SOURCE_DATABASE}.gz
+        '''
+      }
+    }
+  }
+}

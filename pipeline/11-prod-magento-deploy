@@ -1,0 +1,67 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) { 
+
+try {
+stage('notify_slack_channel') {
+  sh '''
+  SLACK_CHANNEL='weekly_deploys'
+  SLACK_URL=test
+  JSON_PAYLOAD=/tmp/payload
+  if [ $(echo ${BUILD_USER} | wc -c) -lt 3 ]; then BUILD_USER='Auto_Deploy'; fi
+  ADD_COMMET="@${BUILD_USER} has started deployment on "
+  TAGGER='```'
+
+#generate json payload for slack
+cat << EOF > $JSON_PAYLOAD
+{
+  \"channel\": \"#${SLACK_CHANNEL}\",
+    \"username\": \"webhookbot\",
+    \"icon_emoji\": \":ghost:\",
+    \"text\": \"${ADD_COMMET}\\n ${TAGGER} Client ENV: ${CLIENT_NAME}-${CLIENT_ENV}\\n Branch: ${BRANCH_TO_DEPLOY} ${TAGGER}\"
+}
+EOF
+
+  curl -X POST -d @${JSON_PAYLOAD} ${SLACK_URL}
+  '''
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Notify Slack Channel\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  '''
+}
+
+try {
+stage ('deploy_code') {
+withCredentials([string(credentialsId: 'capistrano_password_prod', variable: 'CAP_PASS')]) {
+  git changelog: false, credentialsId: 'CorevisCI-git', poll: false, branch: "magento-deploy", url: 'git@github.com:sandzhaj/capistrano3.git'
+  sh label: '', script: '''
+    eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/id_rsa
+    sed -i "s/#password: \\"\\"/password: ${CAP_PASS}/g" config/deploy.rb
+    bundle install
+    if [ $(echo ${BUILD_USER_ID} | wc -c) -lt 3 ]; then BUILD_USER_ID='Auto_Deploy'; fi
+    cap ${CLIENT_NAME}-${CLIENT_ENV} deploy BRANCH="${BRANCH_TO_DEPLOY}" DEPLOYED_BY="${BUILD_USER_ID}" COMMENT="${YOUR_COMMENT}"
+  '''
+}
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Deploy code\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  exit 1
+  '''
+}
+
+}
+}

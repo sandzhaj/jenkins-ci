@@ -1,0 +1,68 @@
+node('deployer') {
+    switch("${DOCKER_FILE_NAME}") {
+             case 'Dockerfile-rspec-regression':
+                 tag = "sandzhajci/rspec-regression:${TAG}"
+                 slack_channel = 'SLACK_CHANNEL=#qa_regression_test'
+                 break;
+             case 'Dockerfile-rspec-static':
+                 tag = "sandzhajci/rspec-static:${TAG}"
+                 slack_channel = 'SLACK_CHANNEL=#review_prs'
+                 break;
+    }  
+    withEnv([slack_channel, 'SLACK_URL=test
+
+try {
+stage('Git clone') {
+    git branch: 'docker-ci',
+     credentialsId: 'CorevisCI-git',
+     url: 'git@github.com:sandzhaj/demo_docker.git'
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"$SLACK_CHANNEL\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: git clone\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_URL
+  exit 1
+  ''' 
+}
+
+try {
+stage('Docker build') {
+    customImage = docker.build(tag, "-f ${DOCKER_FILE_NAME} .")
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Docker build\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${SLACK_URL}
+  exit 1
+  ''' 
+}
+
+try {
+stage('Docker publish') {
+    docker.withRegistry('', 'dockerhub-ci') {
+        customImage.push()
+    }
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Docker publish\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${SLACK_URL}
+  ''' 
+}
+}
+}

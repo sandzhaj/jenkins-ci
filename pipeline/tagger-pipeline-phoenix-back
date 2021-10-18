@@ -1,0 +1,146 @@
+node('static-test-r5') {
+
+stage('checkout_code') {
+  checkout([
+    $class: 'GitSCM',
+     branches: [[name: '*/master']],
+     doGenerateSubmoduleConfigurations: false,
+     extensions: [],
+     submoduleCfg: [],
+     userRemoteConfigs: [[
+       credentialsId: 'CorevisCI-git',
+       url: 'git@github.com:sandzhaj/${REPO_NAME}.git']]]
+  )
+}
+
+stage ('create_tag') {
+  withCredentials([usernamePassword(credentialsId: 'jira_integration_credentials', passwordVariable: 'JIRA_USER_TOKEN', usernameVariable: 'JIRA_USER_NAME')]) {
+
+sh '''
+git config --global user.name "CorevistCI"
+git config --global user.email "sandzhaj@sandzhaj.com"
+
+TAG_FILE=\'new_release.txt\'
+JSON_PAYLOAD=\'payload.json\'
+
+# check master branch for new commits
+if [[ "$(git describe|wc -c)" -gt 8 ]]; then
+echo "Something was merged into master"
+echo "Creating tag"
+CURRENT_RELEASE=$(git describe --abbrev=0 --tags)
+# check if new release
+if git log origin/master -1 | grep new_release; then NEW_RELEASE=true; else NEW_RELEASE=false; fi
+
+if "$NEW_RELEASE"; then
+  NEW_RELEASE_VERSION=$(echo $CURRENT_RELEASE | awk -F. \'{print $1"."$2+1"."0}\')
+  echo "New release: ${NEW_RELEASE_VERSION}"
+else
+  NEW_RELEASE_VERSION=$(echo $CURRENT_RELEASE | awk -F. \'{print $1"."$2"."$3+1}\')
+  echo "Support release: ${NEW_RELEASE_VERSION}"
+fi
+
+if [ $(git config --get remote.origin.url | sed -e "s/.*\\///g;s/.git//g") == "sandzhaj_api" ]; then
+  git checkout master
+  sed -i "s/VERSION.*/VERSION = \'${NEW_RELEASE_VERSION}\'/g" lib/sandzhaj_api/version.rb
+  bundle install
+  git add lib/sandzhaj_api/version.rb
+  git add Gemfile.lock
+  git commit -m "Bump to ${NEW_RELEASE_VERSION}"
+  git push origin master || echo "Nothing to push"
+fi
+
+echo "v${NEW_RELEASE_VERSION}" > ${TAG_FILE}
+git log --reverse --cherry-pick --cherry --pretty=format:"%h %s %b (%an)" ${CURRENT_RELEASE}.. >> ${TAG_FILE}
+cat ${TAG_FILE}
+
+git tag -a ${NEW_RELEASE_VERSION} -F ${TAG_FILE}
+git push origin --tags
+
+if [ "${NEW_RELEASE}" = false ]; then
+
+# only support tickets need to be moved to Requested to PRD state
+# generate json payload for jira, EOF func should NOT have spaces in the begining of line in pipeline jobs
+
+JSON_DATA=json.file
+cat << EOF > ${JSON_DATA}
+{
+  "transition": {
+      "id": "121"
+  }
+}
+EOF
+
+  for JIRA_ID in $(cat ${TAG_FILE} | grep -Po \'\\[\\K[^]]*\' | sort -u);
+  do  
+    curl -v -u "${JIRA_USER_NAME}":"${JIRA_USER_TOKEN}" -X POST -H "Content-Type: application/json" -d @${JSON_DATA}  "https://sandzhaj.atlassian.net/rest/api/2/issue/${JIRA_ID}/transitions"
+  done
+fi
+
+# isolate release tag window
+TAGGER=\'```\'
+
+# update tag file for proper slack representation with "\\n" in the end of each line
+sed -i \'s/$/\\\\n/g\' $TAG_FILE
+
+#set tag file as a variable FILEG to pass it to final json
+FILEG="$(< $TAG_FILE)"
+ADD_COMMET="A new tag has been created for ${CLIENT_NAME}"
+
+# generate json payload for slack
+cat << EOF > $JSON_PAYLOAD
+{
+  "channel": "#${SLACK_CHANNEL_NAME}",
+  "username": "webhookbot",
+  "icon_emoji": ":ghost:",
+  "text": "$ADD_COMMET\\n $TAGGER$FILEG$TAGGER"
+}
+EOF
+
+curl -X POST -d @$JSON_PAYLOAD ${SLACK_CHANNEL_URL}
+
+else
+  echo "nothing has been commited"
+  exit 1
+fi
+'''
+}
+
+if (SEND_RELEASE_NOTES == 'true') {
+stage ('send_release_notes') {
+  def String mail_body
+  def String mail_subject
+  withCredentials([usernamePassword(credentialsId: 'jira_integration_credentials', passwordVariable: 'JIRA_USER_TOKEN', usernameVariable: 'JIRA_USER_NAME')]) {
+    mail_subject = sh (script: ''' 
+      current_release=$(git describe --abbrev=0)
+      echo Release notes for ${REPO_NAME}, v$current_release       
+    ''', returnStdout: true).trim()
+    mail_body = sh (script: '''
+      # VARS
+      declare -A tickets
+      previous_release=$(git describe --abbrev=0 $(git describe --abbrev=0)^)
+      tickets_list=$(git log HEAD...$previous_release  --pretty=oneline --abbrev-commit | grep  -e "\\[\\w*-[0-9]*]" -o | sort --unique | tr -d '[]')
+
+      # get issues info
+      for ticket in $tickets_list; do
+        ticket_info=$(curl -s --request GET \\
+        --url "https://sandzhaj.atlassian.net/rest/api/3/issue/$ticket" \\
+        --user "$JIRA_USER_NAME:$JIRA_USER_TOKEN" \\
+        --header 'Accept: application/json')
+        ticket_title=$(echo "$ticket_info" | jq -r '.fields.summary' )
+        ticket_issue_type=$(echo "$ticket_info" | jq -r '.fields.issuetype.name')
+        current_ticket="Issue: $ticket Title: $ticket_title"
+        tickets["$ticket_issue_type"]+="$current_ticket\\n"
+      done
+
+      # Print issues
+      for ticket_type in "${!tickets[@]}"; do
+        echo ["$ticket_type"]
+        echo -e "${tickets[$ticket_type]}"
+      done
+    ''', returnStdout: true).trim()
+  }
+  emailext body: mail_body, replyTo: 'sandzhajci@sandzhaj.com', subject: mail_subject, to: 'release_notes@sandzhaj.com'
+}}
+
+}
+}

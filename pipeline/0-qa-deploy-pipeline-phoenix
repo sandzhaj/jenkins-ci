@@ -1,0 +1,103 @@
+node('static-test-r5') {
+  wrap([$class: 'BuildUser']) { 
+
+try {
+stage('notify_slack_channel') {
+  sh '''
+  SLACK_CHANNEL='deploys'
+  SLACK_URL=test
+  JSON_PAYLOAD=/tmp/payload
+  if [ $(echo ${BUILD_USER} | wc -c) -lt 3 ]; then BUILD_USER='Auto_Deploy'; fi
+  ADD_COMMET="@${BUILD_USER} has started deployment on "
+  TAGGER='```'
+
+#generate json payload for slack
+cat << EOF > $JSON_PAYLOAD
+{
+  \"channel\": \"#${SLACK_CHANNEL}\",
+    \"username\": \"webhookbot\",
+    \"icon_emoji\": \":ghost:\",
+    \"text\": \"${ADD_COMMET}\\n ${TAGGER} Client ENV: ${CLIENT_NAME}-${CLIENT_ENV}\\n Branch: ${BRANCH_TO_DEPLOY} ${TAGGER}\"
+}
+EOF
+
+  curl -X POST -d @${JSON_PAYLOAD} ${SLACK_URL}
+  '''
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Notify Slack Channel\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  '''
+}
+
+try {
+stage ('deploy_code') {
+withCredentials([string(credentialsId: 'capistrano_password_qa', variable: 'CAP_PASS')]) {
+  git changelog: false, credentialsId: 'CorevisCI-git', poll: false, branch: "${CAP_BRANCH}", url: 'git@github.com:sandzhaj/capistrano3.git'
+  sh label: '', script: '''
+    eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/id_rsa
+    sed -i "s/#password: \\"\\"/password: ${CAP_PASS}/g" config/deploy.rb
+    bundle install
+    if [ $(echo ${BUILD_USER_ID} | wc -c) -lt 3 ]; then BUILD_USER_ID='Auto_Deploy'; fi
+    cap ${CLIENT_NAME}-${CLIENT_ENV} deploy BRANCH="${BRANCH_TO_DEPLOY}" DEPLOYED_BY="${BUILD_USER_ID}" TRIGGER_JENKINS="$TRIGGER_REGRESSION"
+  '''
+}
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Deploy code\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  exit 1
+  '''
+}
+
+if (CLIENT_ENV.contains('-api')) {
+try {
+stage ('rake_tasks') {
+  sh label: '', script: '''
+    tasks=(
+      "translations:create"
+      "users:remove_stale_tokens"
+      "sidekiq:clear -- -d"
+      "roles:assign_assignable_roles USERNAMES=user_admin_test"
+      "permissions:create"
+      )
+    if ${RAKE_DB_REBUILD}; then 
+      cap ${CLIENT_NAME}-${CLIENT_ENV} rake_tasks:run_on_primary_app TASK_TO_RUN="app:db:drop" COMMENT="rake_task" DEPLOYED_BY="${BUILD_USER_ID}"; 
+      cap ${CLIENT_NAME}-${CLIENT_ENV} rake_tasks:run_on_primary_app TASK_TO_RUN="app:db:create" COMMENT="rake_task" DEPLOYED_BY="${BUILD_USER_ID}"; 
+      cap ${CLIENT_NAME}-${CLIENT_ENV} rake_tasks:run_on_primary_app TASK_TO_RUN="app:db:migrate" COMMENT="rake_task" DEPLOYED_BY="${BUILD_USER_ID}"; 
+      cap ${CLIENT_NAME}-${CLIENT_ENV} rake_tasks:run_on_primary_app TASK_TO_RUN="app:db:seed" COMMENT="rake_task" DEPLOYED_BY="${BUILD_USER_ID}"; 
+    fi;
+    for task in "${tasks[@]}"; do
+      if [[ ${CLIENT_NAME} == "phoenix" ]]; then task='app:'$task; fi
+      cap ${CLIENT_NAME}-${CLIENT_ENV} rake_tasks:run_on_primary_app TASK_TO_RUN="$task" COMMENT="rake_task" DEPLOYED_BY="${BUILD_USER_ID}";
+    done;
+  '''
+}} catch (err) {
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"${CLIENT_SLACK_CHANNEL}\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Run rake tasks\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" ${CLIENT_SLACK_URL}
+  ''' 
+}
+}
+
+}
+}

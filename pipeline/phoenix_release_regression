@@ -1,0 +1,142 @@
+node('regression-test-new') { withEnv([
+	'SLACK_REGRESSION_CHANNEL=https://hooks.slack.com/services/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']) {
+
+stage('git clone') {
+try {
+    git branch: '${BRANCH}',
+     credentialsId: 'CorevisCI-git',
+     url: 'git@github.com:sandzhaj/regression.git'
+} catch (err) { sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#qa_regression_test\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Git clone\\n \
+      Build Log: "$BUILD_URL"console\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  exit 1
+''' } 
+}
+
+stage('edit Gemfile') { 
+  sh '''
+    echo "" >> Gemfile
+    echo "gem \\"parallel_tests\\"" >> Gemfile
+    sed -i "/--color/d" .rspec
+    echo "gem: --no-rdoc --no-ri" >> ~/.gemrc
+    echo "" >> .rspec
+    echo "--no-color" >> .rspec
+    echo "" >> .rspec
+    echo "--profile" >> .rspec
+    echo "" >> .rspec
+    echo "-f ReportPortal::RSpec::Formatter" >> .rspec
+    sed -i "/project: Corevist_QA_Department/d" config/report_portal.yml
+    echo "" >> config/report_portal.yml
+    echo "project: ncc_release_regression_tests" >> config/report_portal.yml
+    sed -i "/uuid: d086b640-c45c-4a76-820c-b03511591db5/d" config/report_portal.yml
+    echo "" >> config/report_portal.yml
+    echo "uuid: f9ec83ef-ece6-4c79-9017-5665b80cf4f6" >> config/report_portal.yml
+    sed -i "/launch: Corevist_regression_tests/d" config/report_portal.yml
+    echo "" >> config/report_portal.yml
+    echo "launch: ${BUILD_NUMBER} release_regression_tests $(TZ=Europe/Minsk date +"%d/%m/%y")" >> config/report_portal.yml
+    echo "" >> config/report_portal.yml
+    sed -i "/ENV["retry"] ||= "2"/d" spec/spec_helper.rb
+    echo "" >>  spec/spec_helper.rb
+    echo "ENV[\\"retry\\"] ||= \\"2\\"" >>  spec/spec_helper.rb
+  '''
+}
+
+stage('install_gems') {
+try {
+  timestamps {
+    sh 'time bundle install --jobs 4'
+  }
+} catch (err) { sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#qa_regression_test\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Install Gems\\n \
+      Build Log: "$BUILD_URL"console\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  exit 1
+''' }
+}
+
+stage('Regression') {
+try {
+  sh '''
+  export LANG="en_US.utf8"
+  export LANGUAGE="en_US.utf8"
+  export LC_ALL="en_US.utf8"
+  export env=${TARGET_ENV}
+  echo '172.16.100.5    staging-cshop.axaltacs.com' >> /etc/hosts
+  echo '172.16.100.5    staging-cshop.spieshecker.com' >> /etc/hosts
+  echo '172.16.100.5    staging-cshop.syrox.com' >> /etc/hosts
+  echo '172.16.100.5    staging-cshop.standox.com' >> /etc/hosts
+  echo '172.16.100.5    staging-cshop.cromax.com ' >> /etc/hosts
+
+  xvfb-run -a bundle exec rspec --format html -o reporteg.html spec/${PATH_TO_TESTS} -f ReportPortal::RSpec::Formatter
+  '''
+
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#qa_regression_test\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Regression on: ${CLIENT_NAME}-${TARGET_ENV}\\n \
+      Build result: SUCCESS\\n \
+      ReportURL: "$BUILD_URL"HTML_Report\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  '''
+
+} catch (err) {
+
+  currentBuild.result = 'UNSTABLE'
+  sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#qa_regression_test\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Regression on: ${CLIENT_NAME}-${TARGET_ENV}\\n \
+      Build result: FAILURE\\n \
+      ReportURL: "$BUILD_URL"HTML_Report\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  '''
+  }
+}
+
+stage("Publish report") {
+try {
+  publishHTML([
+    allowMissing: false,
+    alwaysLinkToLastBuild: true,
+    escapeUnderscores: false,
+    includes: '**/*.png,**/*.html',
+    keepAll: true, reportDir: '',
+    reportFiles: 'reporteg.html',
+    reportName: 'HTML_Report',
+    reportTitles: ''
+  ])
+
+} catch (err) { sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#qa_regression_test\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Regression\\n \
+      Build Log: "$BUILD_URL"console\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  exit 1
+''' }
+}
+}
+}

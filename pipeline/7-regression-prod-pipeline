@@ -1,0 +1,108 @@
+node('regression-test') { withEnv([
+	'SLACK_REGRESSION_CHANNEL=https://hooks.slack.com/services/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']) {
+
+stage('git clone') {
+    git branch: 'develop',
+     credentialsId: 'CorevisCI-git',
+     url: 'git@github.com:sandzhaj/regression.git'
+}
+
+stage('install_gems') {
+try {
+    sh 'bundle install'
+} catch (err) { sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#weekly_deploys\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Install Gems\\n \
+      Build Log: "$BUILD_URL"console\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  exit 1
+''' }
+}
+
+stage('Regression') {
+try {
+  withCredentials([
+  usernamePassword(
+    credentialsId: 'b2b_user_prod',
+    passwordVariable: 'b2b_production_password',
+    usernameVariable: 'b2b_production_user')
+  ]) {
+  sh '''
+  export LANG="en_US.utf8"
+  export LANGUAGE="en_US.utf8"
+  export LC_ALL="en_US.utf8"
+
+  xvfb-run -a bundle exec rspec --format html -o reporteg.html spec/${PATH_TO_TESTS}/
+  '''
+
+  sh '''
+  zip -rv reporteg.zip *.html tmp/
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#weekly_deploys\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Regression on: ${CLIENT_NAME}-${TARGET_ENV}\\n \
+      Build result: SUCCESS\\n \
+      ReportURL: "$BUILD_URL"HTML_Report\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  '''
+  }
+} catch (err) {
+
+  currentBuild.result = 'UNSTABLE'
+  sh '''
+  zip -rv reporteg.zip *.html tmp/
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#weekly_deploys\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Regression on: ${CLIENT_NAME}-${TARGET_ENV}\\n \
+      Build result: FAILURE\\n \
+      ReportURL: "$BUILD_URL"HTML_Report\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  '''
+  }
+}
+
+stage("Publish report") {
+try {
+  publishHTML([
+    allowMissing: false,
+    alwaysLinkToLastBuild: true,
+    escapeUnderscores: false,
+    includes: '**/*.png,**/*.html',
+    keepAll: true, reportDir: '',
+    reportFiles: 'reporteg.html',
+    reportName: 'HTML_Report',
+    reportTitles: ''
+  ])
+
+  emailext attachLog: true, attachmentsPattern: '**/*.zip',
+    body: '''$PROJECT_NAME - Build # $BUILD_NUMBER - $BUILD_STATUS:
+    Check console output at $BUILD_URL to view the results.''',
+    compressLog: true, replyTo: 'sandzhajci@sandzhaj.com',
+    subject: '$PROJECT_NAME - Build # $BUILD_NUMBER - $BUILD_STATUS!',
+    to: 'sandzhaj@sandzhaj.com,qa@sandzhaj.com'
+
+} catch (err) { sh '''
+  curl -X POST --data-urlencode "payload={ \
+    \\"channel\\": \\"#weekly_deploys\\", \
+    \\"username\\": \\"webhookbot\\", \
+    \\"text\\": \
+      \\"Failed JOB: $JOB_NAME\\n \
+      FAILD_STEP: Regression\\n \
+      Build Log: "$BUILD_URL"console\\", \
+    \\"icon_emoji\\": \\":ghost:\\" \
+  }" $SLACK_REGRESSION_CHANNEL
+  exit 1
+''' }
+}
+}
+}
